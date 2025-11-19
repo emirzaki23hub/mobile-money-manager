@@ -8,7 +8,11 @@ if (!API_URL) {
 }
 
 export const api = async (endpoint: string, options: RequestInit = {}) => {
-  // 2. Retrieve token from secure phone storage
+  const fullUrl = `${API_URL}${endpoint}`;
+  
+  // 1. Log the outgoing request
+  console.log(`[API REQUEST] ${options.method || 'GET'} ${fullUrl}`);
+
   const token = await SecureStore.getItemAsync("token");
   
   const headers = {
@@ -18,28 +22,43 @@ export const api = async (endpoint: string, options: RequestInit = {}) => {
   };
 
   try {
-    const response = await fetch(`${API_URL}${endpoint}`, {
+    const response = await fetch(fullUrl, {
       ...options,
       headers,
     });
 
-    // 3. Handle Unauthorized (Logout)
+    // Handle Unauthorized (Logout)
     if (response.status === 401) {
+      console.log(`[API FAIL] 401 Unauthorized for ${endpoint}`);
       await SecureStore.deleteItemAsync("token");
       // In a real app, you would trigger a navigation to Login here
       return null;
     }
 
-    const data = await response.json();
+    // Try to parse JSON for success and error handling
+    let data;
+    try {
+      data = await response.json();
+    } catch (e) {
+      // If server returns non-JSON (like an HTML error page)
+      console.error(`[API FAIL] ${response.status} Non-JSON response.`);
+      throw new Error(`Server returned status ${response.status}.`);
+    }
     
-    // 4. Handle Errors returned by API
+    // 4. Handle API Errors (e.g., 404, 400 Bad Request)
     if (!response.ok) {
-      throw new Error(data.error || "Something went wrong");
+      console.error(`[API FAIL] ${response.status} for ${endpoint}:`, data.error);
+      throw new Error(data.error || `Request failed with status ${response.status}`);
     }
 
+    // 3. Log successful response data
+    console.log(`[API SUCCESS] ${response.status} for ${endpoint}`);
+    
     return data;
   } catch (error) {
-    console.error("API Error:", error);
+    // Log network/fetch errors (DNS issues, connection refused, etc.)
+    console.log(error)
+    console.error(`[NETWORK ERROR] Failed to fetch ${fullUrl}:`, error);
     throw error;
   }
 };

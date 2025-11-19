@@ -1,14 +1,33 @@
+import { api } from '@/services/api';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import { LogOut, Plus, Wallet } from 'lucide-react-native';
+import { Calendar, LogOut, Plus, Wallet } from 'lucide-react-native'; // 👈 Calendar imported here
 import { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { api } from '../services/api';
+
+// --- Type Definitions for clarity ---
+type TransactionItem = {
+    id: number;
+    amount: number;
+    type: 'income' | 'expense' | 'transfer';
+    description?: string;
+    date: number; 
+    walletId: number;
+    walletName: string;
+    categoryName: string; 
+};
+
+type WalletItem = {
+    id: number;
+    name: string;
+    // ... other wallet fields
+};
+
 
 export default function Dashboard() {
   const [totalBalance, setTotalBalance] = useState(0);
-  const [transactions, setTransactions] = useState<any[]>([]);
-  const [wallets, setWallets] = useState<any[]>([]);
+  const [transactions, setTransactions] = useState<TransactionItem[]>([]);
+  const [wallets, setWallets] = useState<WalletItem[]>([]);
   const [selectedWalletId, setSelectedWalletId] = useState<number | null>(null); // null = All
   const [refreshing, setRefreshing] = useState(false);
   const router = useRouter();
@@ -21,7 +40,7 @@ export default function Dashboard() {
         api('/transactions'),
         api('/wallets')
       ]);
-
+      
       if (balRes) setTotalBalance(balRes.balance);
       if (listRes) setTransactions(listRes);
       if (walletRes) setWallets(walletRes);
@@ -49,30 +68,81 @@ export default function Dashboard() {
     }).format(amount);
   };
 
-  // Filter transactions based on selected wallet
+  const formatDateHeader = (timestamp: number) => {
+    const date = new Date(timestamp);
+    return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'short', 
+        day: 'numeric' 
+    });
+  };
+  
+  const formatTime = (timestamp: number) => {
+      const date = new Date(timestamp);
+      return date.toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+      });
+  };
+
+  // 1. Filter transactions based on selected wallet
   const filteredTransactions = useMemo(() => {
-    if (!selectedWalletId) return transactions;
-    return transactions.filter(t => t.walletId === selectedWalletId);
+    let list = transactions;
+    if (selectedWalletId) {
+        list = transactions.filter(t => t.walletId === selectedWalletId);
+    }
+    // Ensure the list is sorted by date descending (newest first)
+    return list.sort((a, b) => b.date - a.date); 
   }, [selectedWalletId, transactions]);
+
+  // 2. Group transactions by date
+  const transactionsGroupedByDate = useMemo(() => {
+    const grouped = filteredTransactions.reduce((acc, transaction) => {
+      const dateKey = formatDateHeader(transaction.date); 
+      
+      if (!acc[dateKey]) {
+        acc[dateKey] = [];
+      }
+      acc[dateKey].push(transaction);
+      return acc;
+    }, {} as Record<string, TransactionItem[]>);
+
+    return Object.keys(grouped).map(date => ({
+        date,
+        data: grouped[date]
+    }));
+  }, [filteredTransactions]);
+
 
   // Calculate balance for the selected view
   const currentBalance = useMemo(() => {
     if (!selectedWalletId) return totalBalance;
-    // Calculate specific wallet balance from transaction history
+    
     return filteredTransactions.reduce((acc, curr) => {
-      return curr.type === 'income' ? acc + curr.amount : acc - curr.amount;
+      return curr.type === 'income' ? acc + curr.amount : acc - curr.amount
     }, 0);
   }, [selectedWalletId, filteredTransactions, totalBalance]);
 
-  const renderTransaction = ({ item }: any) => (
-    <View style={styles.transactionItem}>
+  // Helper component to render a single transaction item
+  const renderTransactionItem = (item: TransactionItem) => (
+    <TouchableOpacity 
+      key={item.id} 
+      style={styles.transactionItem}
+      onPress={() => {
+        router.push({
+          pathname: '/transaction', 
+          params: { transactionId: item.id } 
+        });
+      }}
+    >
       <View style={styles.iconPlaceholder}>
-        <Text style={{ fontSize: 20 }}>{item.type === 'income' ? '💰' : '💸'}</Text>
+        <Text style={{ fontSize: 20 }}>{item.type === 'income' ? '💰' : item.type === 'expense' ? '💸' : '🔁'}</Text>
       </View>
       <View style={{ flex: 1, marginLeft: 15 }}>
-        <Text style={styles.transTitle}>{item.category}</Text>
+        <Text style={styles.transTitle}>{item.categoryName}</Text> 
         <Text style={styles.transDesc}>
-          {item.description || 'No description'} • {wallets.find(w => w.id === item.walletId)?.name}
+          {formatTime(item.date)} • {item.description || 'No description'} • {wallets.find(w => w.id === item.walletId)?.name}
         </Text>
       </View>
       <Text style={[
@@ -81,8 +151,17 @@ export default function Dashboard() {
       ]}>
         {item.type === 'income' ? '+' : '-'}{formatIDR(item.amount)}
       </Text>
+    </TouchableOpacity>
+  );
+
+  // 3. Render the section (date header + transactions for that date)
+  const renderTransactionSection = ({ item }: { item: { date: string, data: TransactionItem[] } }) => (
+    <View style={styles.dateGroup}>
+        <Text style={styles.dateHeader}>{item.date}</Text>
+        {item.data.map(renderTransactionItem)}
     </View>
   );
+
 
   return (
     <View style={styles.container}>
@@ -90,10 +169,18 @@ export default function Dashboard() {
       <View style={styles.header}>
         <View style={styles.topRow}>
           <Text style={styles.headerTitle}>My Money</Text>
+          
           <View style={{ flexDirection: 'row', gap: 15 }}>
+            
+            {/* ⭐️ CALENDAR NAVIGATION CTA ⭐️ */}
+            <TouchableOpacity onPress={() => router.push('/calendar')}>
+              <Calendar size={24} color="#000" /> 
+            </TouchableOpacity>
+
             <TouchableOpacity onPress={() => router.push('/add-wallet')}>
               <Wallet size={24} color="#000" /> 
             </TouchableOpacity>
+            
             <TouchableOpacity onPress={handleLogout}>
               <LogOut size={24} color="#000" />
             </TouchableOpacity>
@@ -131,9 +218,9 @@ export default function Dashboard() {
       {/* Transaction List */}
       <View style={styles.listContainer}>
         <FlatList
-          data={filteredTransactions}
-          renderItem={renderTransaction}
-          keyExtractor={(item: any) => item.id.toString()}
+          data={transactionsGroupedByDate} 
+          renderItem={renderTransactionSection} 
+          keyExtractor={(item) => item.date}
           contentContainerStyle={{ padding: 20, paddingBottom: 100 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={loadData} />
@@ -144,7 +231,7 @@ export default function Dashboard() {
         />
       </View>
 
-      {/* FAB */}
+      {/* FAB (Floating Action Button) */}
       <TouchableOpacity 
         style={styles.fab} 
         onPress={() => router.push('/transaction')}
@@ -154,6 +241,8 @@ export default function Dashboard() {
     </View>
   );
 }
+
+// ----------------------------------------------------------------------
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
@@ -192,11 +281,23 @@ const styles = StyleSheet.create({
   activeWalletChipText: { color: '#FFC107' },
 
   listContainer: { flex: 1 },
+  dateGroup: {
+    marginBottom: 20, 
+  },
+  dateHeader: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#666',
+    marginBottom: 8,
+    marginTop: 5,
+    textTransform: 'uppercase',
+  },
+  
   transactionItem: {
     backgroundColor: '#fff',
     padding: 15,
     borderRadius: 16,
-    marginBottom: 12,
+    marginBottom: 12, 
     flexDirection: 'row',
     alignItems: 'center',
     shadowColor: "#000",
